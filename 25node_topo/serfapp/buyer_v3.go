@@ -345,8 +345,14 @@ func main() {
 		}
 
 		// JUST FOR NOW:: QUICK FIX. NEEDS TO BE CHANGED LATER
+		payload, _ := json.Marshal(br)
+		
 		go func() {
-		    _, err := http.Post("http://localhost:4041/trigger", "application/json", nil)
+		    _, err := http.Post(
+		        "http://localhost:4041/trigger",
+		        "application/json",
+		        bytes.NewBuffer(payload),
+		    )
 		    if err != nil {
 		        warnf("trigger POST failed: %v", err)
 		    }
