@@ -1128,11 +1128,12 @@ static json make_payload(const std::string& query,
 // Minimal live HTTP server
 // ============================================================
 static void start_live_http_server(LiveState* state,
-                                   const std::string& host,
-                                   int port,
-                                   const std::string& path)
+                                  const std::string& host,
+                                  int port,
+                                  const std::string& path,
+                                  std::function<json()> trigger_fn)
 {
-    std::thread([state, host, port, path]() {
+    std::thread([state, host, port, path, trigger_fn]() {
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (server_fd < 0) return;
 
@@ -1191,7 +1192,11 @@ static void start_live_http_server(LiveState* state,
             } else if (target == "/healthz") {
                 body = "ok";
                 ctype = "text/plain";
-            } else {
+            } else if (target == "/trigger") { // TEMPORARY SOLUTION FOR NOW
+                json result = trigger_fn();   // ← RUNS do_cycle()
+            
+                body = result.dump();
+            }else {
                 status = "404 Not Found";
                 body = "{}";
             }
@@ -1774,9 +1779,7 @@ int main(int argc, char** argv) {
     }
 
     LiveState state;
-    if (args.http_serve) {
-        start_live_http_server(&state, args.http_host, args.http_port, args.http_path);
-    }
+    
 
     auto do_cycle = [&]() -> json {
         ServiceArgs cycle_args = args;
@@ -1795,6 +1798,11 @@ int main(int argc, char** argv) {
         std::cout.flush();
         return payload;
     };
+
+    if (args.http_serve) {
+        std::function<json()> trigger_fn = do_cycle;
+        start_live_http_server(&state, host, port, path, trigger_fn);
+    }
 
     try {
         if (args.loop) {
