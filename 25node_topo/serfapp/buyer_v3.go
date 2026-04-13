@@ -344,6 +344,14 @@ func main() {
 			infof("broadcast user:%s ip=%s at %s (manual=%v)", *eventName, br.IP, br.Time, store.isManual())
 		}
 
+		// JUST FOR NOW:: QUICK FIX. NEEDS TO BE CHANGED LATER
+		go func() {
+		    _, err := http.Post("http://localhost:4041/trigger", "application/json", nil)
+		    if err != nil {
+		        warnf("trigger POST failed: %v", err)
+		    }
+		}()
+
 		// Sleep a single randomized pause
 		pause := randRangeDur(*pauseMin, *pauseMax)
 		infof("sleeping for %s before next single-shot", pause)
