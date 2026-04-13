@@ -1087,6 +1087,47 @@ static void apply_buyer_overrides(ServiceArgs& args, const ServiceArgs& defaults
 }
 
 // ============================================================
+// Buyer override from JSON NEW FUNCTION
+// ============================================================
+
+static void apply_buyer_overrides_from_json(
+    ServiceArgs& args,
+    const ServiceArgs& defaults,
+    const json& buyer)
+{
+    json res = buyer.value("resources", json::object());
+
+    auto get_num = [&](const char* field, const char* key) -> double {
+        if (!res.contains(field) || !res[field].is_object()) return 0.0;
+        json obj = res[field];
+        if (!obj.contains(key)) return 0.0;
+        return to_d_safe(obj[key]);
+    };
+
+    // reset to defaults
+    args.min_cpu = defaults.min_cpu;
+    args.min_ram = defaults.min_ram;
+    args.min_storage = defaults.min_storage;
+    args.min_gpu = defaults.min_gpu;
+
+    args.min_score_per_cpu = defaults.min_score_per_cpu;
+    args.min_score_per_ram = defaults.min_score_per_ram;
+    args.min_score_per_storage = defaults.min_score_per_storage;
+    args.min_score_per_gpu = defaults.min_score_per_gpu;
+
+    // apply overrides
+    args.min_cpu     = std::max(args.min_cpu,     (int)get_num("vcpu","demand_per_unit"));
+    args.min_ram     = std::max(args.min_ram,          get_num("ram","demand_per_unit"));
+    args.min_storage = std::max(args.min_storage, (int)get_num("storage","demand_per_unit"));
+    args.min_gpu     = std::max(args.min_gpu,     (int)get_num("vgpu","demand_per_unit"));
+
+    double b;
+    b = get_num("vcpu","score");     if (b > 0) args.min_score_per_cpu = b;
+    b = get_num("ram","score");      if (b > 0) args.min_score_per_ram = b;
+    b = get_num("storage","score");  if (b > 0) args.min_score_per_storage = b;
+    b = get_num("vgpu","score");     if (b > 0) args.min_score_per_gpu = b;
+}
+// ============================================================
 // JSON payload helper
 // ============================================================
 static json member_to_json(const MemberInfo& m) {
@@ -1131,9 +1172,10 @@ static void start_live_http_server(LiveState* state,
                                   const std::string& host,
                                   int port,
                                   const std::string& path,
-                                  std::function<json()> trigger_fn)
+                                  std::function<json()> trigger_fn,
+                                  std::function<json(const json&)> do_cycle_with_buyer)
 {
-    std::thread([state, host, port, path, trigger_fn]() {
+    std::thread([state, host, port, path, trigger_fn, do_cycle_with_buyer]() {
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (server_fd < 0) return;
 
@@ -1168,6 +1210,13 @@ static void start_live_http_server(LiveState* state,
             }
             buf[n] = '\0';
             std::string req(buf);
+            
+            // ✅ ADD THIS BLOCK
+            std::string body_in;
+            auto pos = req.find("\r\n\r\n");
+            if (pos != std::string::npos) {
+                body_in = req.substr(pos + 4);
+            }
 
             std::string target = "/";
             auto sp1 = req.find(' ');
@@ -1192,8 +1241,20 @@ static void start_live_http_server(LiveState* state,
             } else if (target == "/healthz") {
                 body = "ok";
                 ctype = "text/plain";
-            } else if (target == "/trigger") { // TEMPORARY SOLUTION FOR NOW
-                json result = trigger_fn();   // ← RUNS do_cycle()
+            } else if (target == "/trigger") {
+                json result;
+            
+                try {
+                    json buyer = json::parse(body_in);
+            
+                    std::cerr << "[trigger] received buyer JSON\n";
+            
+                    result = do_cycle_with_buyer(buyer);
+            
+                } catch (...) {
+                    std::cerr << "[trigger] invalid JSON, falling back\n";
+                    result = trigger_fn(); // fallback
+                }
             
                 body = result.dump();
             }else {
@@ -1799,9 +1860,35 @@ int main(int argc, char** argv) {
         return payload;
     };
 
+    auto do_cycle_with_buyer = [&](const json& buyer) -> json {
+        ServiceArgs cycle_args = args;
+    
+        apply_buyer_overrides_from_json(cycle_args, defaults, buyer);
+    
+        json payload = run_once_adaptive(query_node, cycle_args, arr);
+    
+        {
+            std::lock_guard<std::mutex> lk(state.lock);
+            state.payload = payload;
+        }
+    
+        std::cout << payload.dump(2) << "\n";
+        std::cout.flush();
+        return payload;
+    };
+
     if (args.http_serve) {
         std::function<json()> trigger_fn = do_cycle;
-        start_live_http_server(&state, host, port, path, trigger_fn);
+        std::function<json(const json&)> buyer_fn = do_cycle_with_buyer;
+
+        start_live_http_server(
+            &state,
+            args.http_host,
+            args.http_port,
+            args.http_path,
+            trigger_fn,
+            buyer_fn
+        );
     }
 
     try {
